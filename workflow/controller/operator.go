@@ -2482,7 +2482,7 @@ func (woc *wfOperationCtx) executeTemplate(ctx context.Context, nodeName string,
 		retryParentNode := node
 		if retryParentNode == nil {
 			woc.log.WithField("nodeName", retryNodeName).Debug(ctx, "Inject a retry node")
-			_, retryParentNode = woc.initializeExecutableNode(ctx, retryNodeName, wfv1.NodeTypeRetry, templateScope, processedTmpl, orgTmpl, opts.boundaryID, wfv1.NodeRunning, opts.nodeFlag, true)
+			_, retryParentNode = woc.initializeExecutableNode(ctx, retryNodeName, wfv1.NodeTypeRetry, templateScope, processedTmpl, orgTmpl, opts.boundaryID, wfv1.NodeRunning, opts.nodeFlag.DeepCopy(), true)
 		}
 		if opts.nodeFlag == nil {
 			opts.nodeFlag = &wfv1.NodeFlag{}
@@ -2499,7 +2499,7 @@ func (woc *wfOperationCtx) executeTemplate(ctx context.Context, nodeName string,
 		childNodeIDs, lastChildNode := getChildNodeIdsAndLastRetriedNode(retryParentNode, woc.wf.Status.Nodes)
 
 		// The retry node might have completed by now.
-		if retryParentNode.Fulfilled() && (woc.childrenFulfilled(retryParentNode) || (retryParentNode.IsDaemoned() && retryParentNode.FailedOrError())) { // if retry node is daemoned we want to check those explicitly
+		if retryParentNode.Fulfilled() && (woc.retryAttemptsFulfilled(retryParentNode) || (retryParentNode.IsDaemoned() && retryParentNode.FailedOrError())) { // if retry node is daemoned we want to check those explicitly
 			// If retry node has completed, set the output of the last child node to its output.
 			// Runtime parameters (e.g., `status`, `resourceDuration`) in the output will be used to emit metrics.
 			if lastChildNode != nil {
@@ -2954,6 +2954,18 @@ func (woc *wfOperationCtx) childrenFulfilledHelper(node *wfv1.NodeStatus, cache 
 func (woc *wfOperationCtx) childrenFulfilled(node *wfv1.NodeStatus) bool {
 	m := make(map[string]bool)
 	return woc.childrenFulfilledHelper(node, m)
+}
+
+// retryAttemptsFulfilled checks if all the attempts of a retry node, and their children, are fulfilled.
+// Other children of a retry node, such as hooks, are not attempts and are tracked separately.
+func (woc *wfOperationCtx) retryAttemptsFulfilled(retryNode *wfv1.NodeStatus) bool {
+	for _, attemptID := range getChildNodeIdsRetried(retryNode, woc.wf.Status.Nodes) {
+		attempt := woc.wf.Status.Nodes[attemptID]
+		if !woc.childrenFulfilled(&attempt) {
+			return false
+		}
+	}
+	return true
 }
 
 func (woc *wfOperationCtx) GetNodeTemplate(ctx context.Context, node *wfv1.NodeStatus) (*wfv1.Template, error) {
