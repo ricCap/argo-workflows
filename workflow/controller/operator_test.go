@@ -2758,9 +2758,8 @@ spec:
     suspend: {}
 `
 
-// TestSuspendOutputWithoutValueFrom ensures that a suspend template whose output
-// parameter has a literal value but no valueFrom does not panic the controller.
-// Regression test for https://github.com/argoproj/argo-workflows/issues/13929
+// TestSuspendOutputWithoutValueFrom checks that a suspend template whose output parameter
+// has a literal value but no valueFrom fails its node with a message explaining the fix.
 func TestSuspendOutputWithoutValueFrom(t *testing.T) {
 	cancel, controller := newController(logging.TestContext(t.Context()))
 	defer cancel()
@@ -2770,14 +2769,13 @@ func TestSuspendOutputWithoutValueFrom(t *testing.T) {
 	woc := newWorkflowOperationCtx(ctx, wf, controller)
 	woc.operate(ctx)
 
-	// Before the fix, addRawOutputFields dereferenced a nil ValueFrom and panicked
-	// in initializeExecutableNode, so the suspend node never reached Running (and
-	// the recovered panic marked the workflow Error). It should suspend instead.
 	node := woc.wf.Status.Nodes.FindByDisplayName("suspend-template")
 	require.NotNil(t, node)
 	assert.Equal(t, wfv1.NodeTypeSuspend, node.Type)
-	assert.Equal(t, wfv1.NodeRunning, node.Phase)
-	assert.NotEqual(t, wfv1.WorkflowError, woc.wf.Status.Phase)
+	assert.Equal(t, wfv1.NodeError, node.Phase)
+	assert.Equal(t, `output parameter "consumerConfig": suspend templates only support valueFrom.supplied`, node.Message)
+	assert.True(t, woc.wf.Status.Phase.Completed())
+	assert.NotContains(t, woc.wf.Status.Message, "nil pointer")
 }
 
 func TestSequence(t *testing.T) {

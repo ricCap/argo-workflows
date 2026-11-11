@@ -3887,6 +3887,9 @@ func (woc *wfOperationCtx) executeSuspend(ctx context.Context, nodeName string, 
 	node, err := woc.wf.GetNodeByName(nodeName)
 	if err != nil {
 		_, node = woc.initializeExecutableNode(ctx, nodeName, wfv1.NodeTypeSuspend, templateScope, tmpl, orgTmpl, opts.boundaryID, wfv1.NodePending, opts.nodeFlag, true)
+		if err := validateSuspendOutputs(tmpl); err != nil {
+			return node, err
+		}
 		woc.resolveInputFieldsForSuspendNode(ctx, node)
 	}
 	woc.log.WithField("nodeName", nodeName).Info(ctx, "node suspended")
@@ -3954,6 +3957,17 @@ func (woc *wfOperationCtx) resolveInputFieldsForSuspendNode(ctx context.Context,
 			}
 		}
 	}
+}
+
+// validateSuspendOutputs rejects suspend output parameters without a valueFrom, such as a
+// literal value: a suspend node only gets its outputs through valueFrom.supplied.
+func validateSuspendOutputs(tmpl *wfv1.Template) error {
+	for _, param := range tmpl.Outputs.Parameters {
+		if param.ValueFrom == nil {
+			return argoerrors.Errorf(argoerrors.CodeBadRequest, "output parameter %q: suspend templates only support valueFrom.supplied", param.Name)
+		}
+	}
+	return nil
 }
 
 func addRawOutputFields(node *wfv1.NodeStatus, tmpl *wfv1.Template) *wfv1.NodeStatus {
