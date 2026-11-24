@@ -704,8 +704,10 @@ type testWatchWorkflowServer struct {
 	testServerStream
 }
 
+// Send discards events: the client-go v0.36+ fake sends the existing workflow
+// as soon as the watch opens.
 func (t testWatchWorkflowServer) Send(*workflowpkg.WorkflowWatchEvent) error {
-	panic("implement me")
+	return nil
 }
 
 func TestWatchWorkflows(t *testing.T) {

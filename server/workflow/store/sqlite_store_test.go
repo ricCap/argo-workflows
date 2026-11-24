@@ -234,6 +234,41 @@ func TestStoreOperation(t *testing.T) {
 	})
 }
 
+func TestStoreLastSyncResourceVersion(t *testing.T) {
+	store, err := NewSQLiteStore(instanceid.NewService("my-instanceid"))
+	require.NoError(t, err)
+	assert.Empty(t, store.LastStoreSyncResourceVersion(), "nothing synced yet")
+
+	withRV := func(uid int, rv string) *wfv1.Workflow {
+		wf := generateWorkflow(time.Now(), uid)
+		wf.ResourceVersion = rv
+		return wf
+	}
+
+	require.NoError(t, store.Replace([]any{withRV(0, "5")}, "10"))
+	assert.Equal(t, "10", store.LastStoreSyncResourceVersion(), "Replace records the list resource version")
+
+	require.NoError(t, store.Add(withRV(1, "11")))
+	assert.Equal(t, "11", store.LastStoreSyncResourceVersion())
+
+	require.NoError(t, store.Update(withRV(1, "12")))
+	assert.Equal(t, "12", store.LastStoreSyncResourceVersion())
+
+	require.NoError(t, store.Delete(withRV(1, "13")))
+	assert.Equal(t, "13", store.LastStoreSyncResourceVersion())
+
+	store.Bookmark("20")
+	assert.Equal(t, "20", store.LastStoreSyncResourceVersion())
+
+	// Failed writes must not move the resource version.
+	require.NoError(t, sqlitex.ExecuteScript(store.conn, "drop table "+workflowLabelsTableName+"; drop table "+workflowTableName+";", nil))
+	require.Error(t, store.Add(withRV(2, "21")))
+	require.Error(t, store.Update(withRV(2, "22")))
+	require.Error(t, store.Delete(withRV(0, "23")))
+	require.Error(t, store.Replace([]any{withRV(2, "24")}, "25"))
+	assert.Equal(t, "20", store.LastStoreSyncResourceVersion(), "a failed write leaves the resource version unchanged")
+}
+
 func generateWorkflow(now time.Time, uid int) *wfv1.Workflow {
 	ts := now.Add(-24 * time.Duration(uid) * time.Hour)
 	return &wfv1.Workflow{ObjectMeta: metav1.ObjectMeta{

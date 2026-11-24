@@ -76,6 +76,8 @@ type SQLiteStore struct {
 	conn            *sqlite.Conn
 	instanceService instanceid.Service
 	mtx             sync.Mutex
+	// lastSyncRV is the newest applied resource version; guarded by mtx.
+	lastSyncRV string
 }
 
 var _ WorkflowStore = &SQLiteStore{}
@@ -170,10 +172,11 @@ func (s *SQLiteStore) Add(obj any) error {
 	}
 	s.mtx.Lock()
 	defer s.mtx.Unlock()
-	done := sqlitex.Transaction(s.conn)
-	err := s.upsertWorkflow(wf)
-	defer done(&err)
-	return err
+	if err := s.inTransaction(func() error { return s.upsertWorkflow(wf) }); err != nil {
+		return err
+	}
+	s.lastSyncRV = wf.ResourceVersion
+	return nil
 }
 
 func (s *SQLiteStore) Update(obj any) error {
@@ -183,10 +186,11 @@ func (s *SQLiteStore) Update(obj any) error {
 	}
 	s.mtx.Lock()
 	defer s.mtx.Unlock()
-	done := sqlitex.Transaction(s.conn)
-	err := s.upsertWorkflow(wf)
-	defer done(&err)
-	return err
+	if err := s.inTransaction(func() error { return s.upsertWorkflow(wf) }); err != nil {
+		return err
+	}
+	s.lastSyncRV = wf.ResourceVersion
+	return nil
 }
 
 func (s *SQLiteStore) Delete(obj any) error {
@@ -196,7 +200,11 @@ func (s *SQLiteStore) Delete(obj any) error {
 	}
 	s.mtx.Lock()
 	defer s.mtx.Unlock()
-	return sqlitex.Execute(s.conn, deleteWorkflowQuery, &sqlitex.ExecOptions{Args: []any{string(wf.UID)}})
+	if err := sqlitex.Execute(s.conn, deleteWorkflowQuery, &sqlitex.ExecOptions{Args: []any{string(wf.UID)}}); err != nil {
+		return err
+	}
+	s.lastSyncRV = wf.ResourceVersion
+	return nil
 }
 
 func (s *SQLiteStore) Replace(list []any, resourceVersion string) error {
@@ -210,14 +218,38 @@ func (s *SQLiteStore) Replace(list []any, resourceVersion string) error {
 	}
 	s.mtx.Lock()
 	defer s.mtx.Unlock()
+	if err := s.inTransaction(func() error { return s.replaceWorkflows(wfs) }); err != nil {
+		return err
+	}
+	s.lastSyncRV = resourceVersion
+	return nil
+}
+
+// inTransaction runs f in a transaction and returns f's or the commit's error.
+// Called with the mutex.
+func (s *SQLiteStore) inTransaction(f func() error) (err error) {
 	done := sqlitex.Transaction(s.conn)
-	err := s.replaceWorkflows(wfs)
 	defer done(&err)
-	return err
+	return f()
 }
 
 func (s *SQLiteStore) Resync() error {
 	return nil
+}
+
+// Bookmark records a resource version without an object change (cache.Store, client-go v0.36+).
+func (s *SQLiteStore) Bookmark(resourceVersion string) {
+	s.mtx.Lock()
+	defer s.mtx.Unlock()
+	s.lastSyncRV = resourceVersion
+}
+
+// LastStoreSyncResourceVersion returns the newest applied resource version, or ""
+// (cache.Store, client-go v0.36+).
+func (s *SQLiteStore) LastStoreSyncResourceVersion() string {
+	s.mtx.Lock()
+	defer s.mtx.Unlock()
+	return s.lastSyncRV
 }
 
 func (s *SQLiteStore) List() []any {
