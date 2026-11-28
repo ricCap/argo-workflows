@@ -269,6 +269,39 @@ func TestStoreLastSyncResourceVersion(t *testing.T) {
 	assert.Equal(t, "20", store.LastStoreSyncResourceVersion(), "a failed write leaves the resource version unchanged")
 }
 
+// A write whose COMMIT fails returns the error, keeps the previous resource
+// version and leaves no rows behind.
+func TestStoreCommitFailure(t *testing.T) {
+	store, err := NewSQLiteStore(instanceid.NewService("my-instanceid"))
+	require.NoError(t, err)
+	store.Bookmark("1")
+	// The trigger's orphan row breaks a deferred foreign key: the upsert
+	// succeeds and only COMMIT fails.
+	require.NoError(t, sqlitex.ExecuteScript(store.conn, `
+create table commit_guard (uid varchar(128) references argo_workflows (uid) deferrable initially deferred);
+create trigger orphan_guard after insert on argo_workflows begin
+  insert into commit_guard (uid) values ('missing');
+end;`, nil))
+	countWorkflows := func() int {
+		n := -1
+		require.NoError(t, sqlitex.ExecuteTransient(store.conn, "select count(*) from "+workflowTableName, &sqlitex.ExecOptions{
+			ResultFunc: func(stmt *sqlite.Stmt) error { n = stmt.ColumnInt(0); return nil },
+		}))
+		return n
+	}
+	wf := generateWorkflow(time.Now(), 0)
+	wf.ResourceVersion = "2"
+
+	require.Error(t, store.Add(wf))
+	assert.Equal(t, "1", store.LastStoreSyncResourceVersion())
+	assert.Equal(t, 0, countWorkflows(), "the failed transaction is rolled back")
+
+	require.NoError(t, sqlitex.ExecuteTransient(store.conn, "drop trigger orphan_guard", nil))
+	require.NoError(t, store.Add(wf))
+	assert.Equal(t, "2", store.LastStoreSyncResourceVersion())
+	assert.Equal(t, 1, countWorkflows())
+}
+
 func generateWorkflow(now time.Time, uid int) *wfv1.Workflow {
 	ts := now.Add(-24 * time.Duration(uid) * time.Hour)
 	return &wfv1.Workflow{ObjectMeta: metav1.ObjectMeta{
